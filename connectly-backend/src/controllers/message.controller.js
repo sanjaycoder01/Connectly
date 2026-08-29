@@ -25,6 +25,24 @@ const createMessage = async (req, res, next) => {
   }
 };
 
+const getMessages = async (req, res, next) => {
+  try {
+    const { conversationId } = req.params;
+    const { limit, cursor } = req.query;
+
+    const result = await messageService.getConversationMessages(
+      conversationId,
+      req.user._id,
+      { limit, cursor }
+    );
+
+    return res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   createMessage,
+  getMessages,
 };
