@@ -1,13 +1,12 @@
 const mongoose = require("mongoose");
+const { mongoUri } = require("./env");
 
 const connectDB = async () => {
-  const uri = process.env.MONGO_URI;
+  mongoose.connection.on("disconnected", () => {
+    console.log("MongoDB disconnected");
+  });
 
-  if (!uri) {
-    throw new Error("MONGO_URI is not defined in environment variables");
-  }
-
-  await mongoose.connect(uri);
+  await mongoose.connect(mongoUri);
   console.log("MongoDB connected");
 };
 

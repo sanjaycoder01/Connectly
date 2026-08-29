@@ -1,22 +1,27 @@
-require("dotenv").config();
-
 const http = require("http");
 const app = require("./app");
+const { port, nodeEnv } = require("./config/env");
 const connectDB = require("./config/db");
-const initSocket = require("./sockets");
 
-const PORT = process.env.PORT || 5000;
+const server = http.createServer(app);
 
 const startServer = async () => {
   await connectDB();
 
-  const server = http.createServer(app);
-  initSocket(server);
-
-  server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+  server.listen(port, () => {
+    console.log(`Server running on port ${port} (${nodeEnv})`);
   });
 };
+
+const shutdown = (signal) => {
+  console.log(`${signal} received, shutting down gracefully`);
+  server.close(() => {
+    process.exit(0);
+  });
+};
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 startServer().catch((error) => {
   console.error("Failed to start server:", error.message);
