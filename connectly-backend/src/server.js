@@ -5,6 +5,7 @@ const { port, nodeEnv } = require("./config/env");
 const connectDB = require("./config/db");
 const socketAuth = require("./middleware/socketAuth.middleware");
 const conversationService = require("./services/conversation.service");
+const messageService = require("./services/message.service");
 const server = http.createServer(app);
 
 const io = new Server(server, {
@@ -35,6 +36,34 @@ io.on("connection", (socket) => {
       socket.emit("join_conversation_success", { conversationId });
     } catch (error) {
       socket.emit("join_conversation_error", {
+        message: error.message,
+        statusCode: error.statusCode || 500,
+      });
+    }
+  });
+
+  socket.on("send_message", async ({ conversationId, content }) => {
+    try {
+      if (!conversationId || !content?.trim()) {
+        return socket.emit("send_message_error", {
+          message: "conversationId and content are required",
+          statusCode: 400,
+        });
+      }
+
+      const senderId = socket.user._id;
+
+      await conversationService.assertParticipant(conversationId, senderId);
+
+      const message = await messageService.createMessage(
+        conversationId,
+        senderId,
+        content.trim()
+      );
+
+      io.to(conversationId.toString()).emit("new_message", message);
+    } catch (error) {
+      socket.emit("send_message_error", {
         message: error.message,
         statusCode: error.statusCode || 500,
       });
