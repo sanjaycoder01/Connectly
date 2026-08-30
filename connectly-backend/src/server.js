@@ -42,10 +42,17 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("send_message", async ({ conversationId, content }) => {
+  socket.on("send_message", async ({ conversationId, content }, ack) => {
+    const respond = (payload) => {
+      if (typeof ack === "function") {
+        ack(payload);
+      }
+    };
+
     try {
       if (!conversationId || !content?.trim()) {
-        return socket.emit("send_message_error", {
+        return respond({
+          ok: false,
           message: "conversationId and content are required",
           statusCode: 400,
         });
@@ -62,8 +69,11 @@ io.on("connection", (socket) => {
       );
 
       io.to(conversationId.toString()).emit("new_message", message);
+
+      respond({ ok: true, message });
     } catch (error) {
-      socket.emit("send_message_error", {
+      respond({
+        ok: false,
         message: error.message,
         statusCode: error.statusCode || 500,
       });
