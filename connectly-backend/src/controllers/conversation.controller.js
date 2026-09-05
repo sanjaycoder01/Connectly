@@ -25,7 +25,10 @@ const createConversation = async (req, res, next) => {
 
     return res.status(200).json({
       message: "Conversation ready",
-      conversation,
+      conversation: conversationService.formatConversation(
+        conversation,
+        userId
+      ),
     });
   } catch (error) {
     next(error);

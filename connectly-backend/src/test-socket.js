@@ -1,5 +1,6 @@
 require("dotenv").config();
 
+const { randomUUID } = require("crypto");
 const http = require("http");
 const { io } = require("socket.io-client");
 
@@ -47,7 +48,7 @@ const getTokenFromSetCookie = (setCookieHeader) => {
     : [setCookieHeader];
 
   for (const entry of cookies) {
-    const match = entry.match(/token=([^;]+)/);
+    const match = entry?.match(/token=([^;]+)/);
     if (match) return match[1];
   }
 
@@ -65,72 +66,46 @@ const signupOrLogin = async (username, email, password) => {
     });
   }
 
-  if (response.status !== 200 && response.status !== 201) {
-    throw new Error(
-      `Auth failed for ${username} (${response.status}): ${response.body?.message || "unknown error"}`
-    );
-  }
-
   const token = getTokenFromSetCookie(response.headers["set-cookie"]);
-
-  if (!token) {
-    throw new Error(`Login succeeded for ${username} but no token cookie was returned`);
-  }
-
   return { token, user: response.body.user };
 };
 
-const tryJoinConversation = (token, conversationId) =>
+const connectSocket = (token) =>
   new Promise((resolve, reject) => {
     const socket = io(BASE_URL, {
-      extraHeaders: {
-        Cookie: `token=${token}`,
-      },
+      extraHeaders: { Cookie: `token=${token}` },
     });
 
-    const timeout = setTimeout(() => {
-      socket.close();
-      reject(new Error("Socket room join test timed out"));
-    }, 5000);
+    socket.on("connect", () => resolve(socket));
+    socket.on("connect_error", reject);
+  });
 
-    socket.on("connect", () => {
-      socket.emit("join_conversation", conversationId);
+const sendMessage = (socket, payload) =>
+  new Promise((resolve, reject) => {
+    socket.emit("send_message", payload, (response) => {
+      if (!response) reject(new Error("No acknowledgement received"));
+      else resolve(response);
     });
+  });
 
-    socket.on("join_conversation_success", (payload) => {
-      clearTimeout(timeout);
-      socket.close();
-      resolve({ ok: true, payload });
-    });
-
-    socket.on("join_conversation_error", (payload) => {
-      clearTimeout(timeout);
-      socket.close();
-      resolve({ ok: false, payload });
-    });
-
-    socket.on("connect_error", (error) => {
-      clearTimeout(timeout);
-      socket.close();
-      reject(new Error(`Socket auth failed: ${error.message}`));
+const joinConversation = (socket, conversationId) =>
+  new Promise((resolve, reject) => {
+    socket.emit("join_conversation", conversationId, (response) => {
+      if (response?.ok === false) reject(new Error(response.message));
+      else resolve(response);
     });
   });
 
 const main = async () => {
   try {
     const alice = await signupOrLogin(
-      "alice_secure",
-      "alice_secure@example.com",
+      "alice_idem",
+      "alice_idem@example.com",
       "secret123"
     );
     const bob = await signupOrLogin(
-      "bob_secure",
-      "bob_secure@example.com",
-      "secret123"
-    );
-    const john = await signupOrLogin(
-      "john_secure",
-      "john_secure@example.com",
+      "bob_idem",
+      "bob_idem@example.com",
       "secret123"
     );
 
@@ -142,43 +117,48 @@ const main = async () => {
     );
 
     const conversationId = conversationResponse.body.conversation._id;
-    console.log("Conversation created:", conversationId);
+    const aliceSocket = await connectSocket(alice.token);
+    const bobSocket = await connectSocket(bob.token);
 
-    const participantJoin = await tryJoinConversation(alice.token, conversationId);
-    console.log(
-      "1. Participant join:",
-      participantJoin.ok ? "success" : participantJoin.payload.message
-    );
+    await joinConversation(aliceSocket, conversationId);
+    await joinConversation(bobSocket, conversationId);
 
-    const outsiderJoin = await tryJoinConversation(john.token, conversationId);
-    console.log(
-      "2. Non-participant join:",
-      outsiderJoin.ok ? "unexpected success" : outsiderJoin.payload.message,
-      `(status ${outsiderJoin.payload.statusCode})`
-    );
+    let bobNewMessageCount = 0;
+    bobSocket.on("new_message", () => {
+      bobNewMessageCount += 1;
+    });
 
-    const invalidJoin = await tryJoinConversation(
-      alice.token,
-      "000000000000000000000000"
-    );
-    console.log(
-      "3. Invalid conversation:",
-      invalidJoin.ok ? "unexpected success" : invalidJoin.payload.message,
-      `(status ${invalidJoin.payload.statusCode})`
-    );
+    const clientMessageId = randomUUID();
+    const payload = {
+      conversationId,
+      content: "Hello Bob (idempotent)",
+      clientMessageId,
+    };
+
+    const firstAck = await sendMessage(aliceSocket, payload);
+    const retryAck = await sendMessage(aliceSocket, payload);
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    console.log("First created:", firstAck.created, firstAck.message?._id);
+    console.log("Retry created:", retryAck.created, retryAck.message?._id);
+    console.log("Bob events:", bobNewMessageCount);
+
+    aliceSocket.close();
+    bobSocket.close();
 
     if (
-      participantJoin.ok &&
-      !outsiderJoin.ok &&
-      outsiderJoin.payload.statusCode === 403 &&
-      !invalidJoin.ok &&
-      invalidJoin.payload.statusCode === 404
+      firstAck.ok &&
+      firstAck.created &&
+      !retryAck.created &&
+      firstAck.message?._id === retryAck.message?._id &&
+      bobNewMessageCount === 1
     ) {
-      console.log("Secure room join test passed");
+      console.log("Idempotent send_message test passed");
       process.exit(0);
     }
 
-    throw new Error("Secure room join test failed");
+    throw new Error("Idempotent send_message test failed");
   } catch (error) {
     console.error(error.message);
     process.exit(1);

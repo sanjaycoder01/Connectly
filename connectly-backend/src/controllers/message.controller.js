@@ -11,14 +11,16 @@ const createMessage = async (req, res, next) => {
       });
     }
 
-    const message = await messageService.createMessage(
+    const { message, created } = await messageService.createMessage(
       conversationId,
       senderId,
-      content
+      content,
+      req.body.clientMessageId
     );
 
-    return res.status(201).json({
+    return res.status(created ? 201 : 200).json({
       message,
+      created,
     });
   } catch (error) {
     next(error);

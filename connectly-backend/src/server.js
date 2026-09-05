@@ -1,89 +1,12 @@
 const http = require("http");
 const app = require("./app");
-const { Server } = require("socket.io");
 const { port, nodeEnv } = require("./config/env");
 const connectDB = require("./config/db");
-const socketAuth = require("./middleware/socketAuth.middleware");
-const conversationService = require("./services/conversation.service");
-const messageService = require("./services/message.service");
+const initSocket = require("./sockets");
+
 const server = http.createServer(app);
 
-const io = new Server(server, {
-  cors: {
-    origin: "*",
-    credentials: true,
-  },
-});
-
-io.use(socketAuth);
-
-io.on("connection", (socket) => {
-  console.log("Socket connected:", socket.id);
-
-  socket.on("join_conversation", async (conversationId) => {
-    try {
-      await conversationService.assertParticipant(
-        conversationId,
-        socket.user._id
-      );
-
-      socket.join(conversationId.toString());
-
-      console.log(
-        `${socket.user.username} joined conversation ${conversationId}`
-      );
-
-      socket.emit("join_conversation_success", { conversationId });
-    } catch (error) {
-      socket.emit("join_conversation_error", {
-        message: error.message,
-        statusCode: error.statusCode || 500,
-      });
-    }
-  });
-
-  socket.on("send_message", async ({ conversationId, content }, ack) => {
-    const respond = (payload) => {
-      if (typeof ack === "function") {
-        ack(payload);
-      }
-    };
-
-    try {
-      if (!conversationId || !content?.trim()) {
-        return respond({
-          ok: false,
-          message: "conversationId and content are required",
-          statusCode: 400,
-        });
-      }
-
-      const senderId = socket.user._id;
-
-      await conversationService.assertParticipant(conversationId, senderId);
-
-      const message = await messageService.createMessage(
-        conversationId,
-        senderId,
-        content.trim()
-      );
-
-      io.to(conversationId.toString()).emit("new_message", message);
-
-      respond({ ok: true, message });
-    } catch (error) {
-      respond({
-        ok: false,
-        message: error.message,
-        statusCode: error.statusCode || 500,
-      });
-    }
-  });
-
-  socket.on("disconnect", () => {
-    console.log("Socket disconnected:", socket.id);
-  });
-});
+initSocket(server);
 
 const startServer = async () => {
   await connectDB();
