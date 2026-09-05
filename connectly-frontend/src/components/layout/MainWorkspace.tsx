@@ -40,6 +40,7 @@ export const MainWorkspace: React.FC = () => {
           {/* Left Column: Conversations & Search */}
           <ConversationsSidebar
             onStartNewChat={handleStartNewChat}
+            activeFilterTab={activeTopTab}
           />
 
           {/* Center Column: Active Chat or Empty Chat State */}

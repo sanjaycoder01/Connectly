@@ -7,6 +7,7 @@ import {
   Settings,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useChat } from '../../context/ChatContext';
 
 interface NavigationRailProps {
   activeTab?: string;
@@ -18,9 +19,12 @@ export const NavigationRail: React.FC<NavigationRailProps> = ({
   onTabChange,
 }) => {
   const { user } = useAuth();
+  const { conversations } = useChat();
+
+  const totalUnread = conversations.reduce((sum, c) => sum + (c.unreadCount || 0), 0);
 
   const navItems = [
-    { id: 'messages', label: 'Messages', icon: MessageSquare },
+    { id: 'messages', label: 'Messages', icon: MessageSquare, unreadCount: totalUnread },
     { id: 'threads', label: 'Threads', icon: MessageCircle, hasBadge: true },
     { id: 'contacts', label: 'Contacts', icon: Users },
     { id: 'notifications', label: 'Notifications', icon: Bell, hasBadge: true },
@@ -54,8 +58,14 @@ export const NavigationRail: React.FC<NavigationRailProps> = ({
                 }`}
               >
                 <Icon className={`w-5 h-5 ${isActive ? 'fill-white/20' : ''}`} />
-                {item.hasBadge && !isActive && (
-                  <span className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-red-500 ring-2 ring-white" />
+                {item.id === 'messages' && (item.unreadCount ?? 0) > 0 && !isActive ? (
+                  <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full bg-red-500 text-[9px] font-bold text-white flex items-center justify-center ring-2 ring-white">
+                    {(item.unreadCount ?? 0) > 99 ? '99+' : item.unreadCount}
+                  </span>
+                ) : (
+                  item.hasBadge && !isActive && (
+                    <span className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-red-500 ring-2 ring-white" />
+                  )
                 )}
               </button>
             );

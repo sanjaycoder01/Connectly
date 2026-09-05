@@ -9,11 +9,14 @@ interface ChatContextType {
   activeConversation: Conversation | null;
   messages: Message[];
   onlineUserIds: Set<string>;
+  typingUsers: Record<string, string>;
   isLoadingConversations: boolean;
   isLoadingMessages: boolean;
   setActiveConversation: (conversation: Conversation | null) => void;
   startConversationWithUser: (userId: string) => Promise<Conversation>;
   sendMessage: (content: string) => Promise<void>;
+  sendTypingStart: (conversationId: string) => void;
+  sendTypingStop: (conversationId: string) => void;
   refreshConversations: () => Promise<void>;
   isUserOnline: (userId: string) => boolean;
 }
@@ -27,6 +30,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [activeConversation, setActiveConversationState] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [onlineUserIds, setOnlineUserIds] = useState<Set<string>>(new Set());
+  const [typingUsers, setTypingUsers] = useState<Record<string, string>>({});
   const [isLoadingConversations, setIsLoadingConversations] = useState<boolean>(false);
   const [isLoadingMessages, setIsLoadingMessages] = useState<boolean>(false);
 
@@ -37,7 +41,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     activeConversationRef.current = activeConversation;
   }, [activeConversation]);
 
-  // Load user conversations from backend
+  // Load user conversations from backend (Feature 5: Unread count & conversation list)
   const refreshConversations = useCallback(async () => {
     if (!isAuthenticated) return;
     try {
@@ -54,15 +58,26 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     if (isAuthenticated) {
       refreshConversations();
+
+      // Refresh on window focus and periodically so unread counts stay in sync
+      const handleFocus = () => refreshConversations();
+      window.addEventListener('focus', handleFocus);
+      const interval = setInterval(refreshConversations, 10000);
+
+      return () => {
+        window.removeEventListener('focus', handleFocus);
+        clearInterval(interval);
+      };
     } else {
       setConversations([]);
       setActiveConversationState(null);
       setMessages([]);
       setOnlineUserIds(new Set());
+      setTypingUsers({});
     }
   }, [isAuthenticated, refreshConversations]);
 
-  // Socket.IO lifecycle
+  // Socket.IO lifecycle: Presence (1), Typing (2), Delivery (3), Read/Seen (4), Unread (5)
   useEffect(() => {
     if (!isAuthenticated || !user) {
       if (socketRef.current) {
@@ -83,6 +98,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.log('Socket connected:', socket.id);
     });
 
+    // 1. Online/Offline presence
     socket.on('presence_snapshot', ({ onlineUserIds: userIds }: { onlineUserIds: string[] }) => {
       setOnlineUserIds(new Set(userIds.map((id) => id.toString())));
     });
@@ -103,11 +119,72 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
     });
 
+    const typingTimersRef: Record<string, ReturnType<typeof setTimeout>> = {};
+
+    // 2. Typing indicator
+    socket.on(
+      'typing_start',
+      ({
+        conversationId,
+        userId,
+        username,
+      }: {
+        conversationId: string;
+        userId: string;
+        username: string;
+      }) => {
+        const active = activeConversationRef.current;
+        const activeId = active?._id || active?.id;
+        if (activeId === conversationId && userId !== user.id) {
+          setTypingUsers((prev) => ({ ...prev, [userId]: username }));
+
+          // Auto-clear typing indicator after 5 seconds if typing_stop was dropped
+          if (typingTimersRef[userId]) {
+            clearTimeout(typingTimersRef[userId]);
+          }
+          typingTimersRef[userId] = setTimeout(() => {
+            setTypingUsers((prev) => {
+              const next = { ...prev };
+              delete next[userId];
+              return next;
+            });
+            delete typingTimersRef[userId];
+          }, 5000);
+        }
+      }
+    );
+
+    socket.on(
+      'typing_stop',
+      ({
+        conversationId,
+        userId,
+      }: {
+        conversationId: string;
+        userId: string;
+      }) => {
+        const active = activeConversationRef.current;
+        const activeId = active?._id || active?.id;
+        if (activeId === conversationId) {
+          if (typingTimersRef[userId]) {
+            clearTimeout(typingTimersRef[userId]);
+            delete typingTimersRef[userId];
+          }
+          setTypingUsers((prev) => {
+            const next = { ...prev };
+            delete next[userId];
+            return next;
+          });
+        }
+      }
+    );
+
+    // 3. New message & delivery / read
     socket.on('new_message', (msg: Message) => {
       const active = activeConversationRef.current;
       const conversationId = msg.conversationId.toString();
 
-      // If active conversation, append message and mark as read/delivered
+      // If active conversation, append message and mark as read & delivered
       if (active && (active._id === conversationId || active.id === conversationId)) {
         setMessages((prev) => {
           if (prev.some((m) => m._id === msg._id)) return prev;
@@ -115,17 +192,19 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
 
         if (msg.senderId !== user.id) {
-          socket.emit('message_read', { conversationId });
+          // Emits delivery and read
           socket.emit('message_delivered', { messageId: msg._id });
+          socket.emit('message_read', { conversationId });
         }
       }
 
-      // Update conversations list with latest message and unread count
+      // 5. Update conversations list with latest message and unread count
       setConversations((prev) => {
         return prev.map((c) => {
           const cId = c._id || c.id;
           if (cId === conversationId) {
-            const isCurrentChat = active && (active._id === conversationId || active.id === conversationId);
+            const isCurrentChat =
+              active && (active._id === conversationId || active.id === conversationId);
             return {
               ...c,
               lastMessage: {
@@ -142,24 +221,55 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
     });
 
-    socket.on('message_read', ({ messageIds }: { messageIds: string[] }) => {
-      if (!messageIds || messageIds.length === 0) return;
-      setMessages((prev) =>
-        prev.map((msg) =>
-          messageIds.includes(msg._id) ? { ...msg, status: 'read' } : msg
-        )
-      );
-    });
+    // 4. Read/Seen status
+    socket.on(
+      'message_read',
+      ({
+        conversationId,
+        messageIds,
+        readBy,
+      }: {
+        conversationId?: string;
+        messageIds: string[];
+        readBy?: string;
+        readAt?: string;
+      }) => {
+        if (messageIds && messageIds.length > 0) {
+          setMessages((prev) =>
+            prev.map((msg) => {
+              const msgId = msg._id || msg.id;
+              return msgId && messageIds.includes(msgId)
+                ? { ...msg, status: 'read' }
+                : msg;
+            })
+          );
+        }
 
-    socket.on('message_delivered', ({ messageId }: { messageId: string }) => {
-      setMessages((prev) =>
-        prev.map((msg) =>
-          msg._id === messageId && msg.status === 'sent'
-            ? { ...msg, status: 'delivered' }
-            : msg
-        )
-      );
-    });
+        // If I read it, clear conversation unread count locally
+        if (conversationId && readBy === user.id) {
+          setConversations((prev) =>
+            prev.map((c) =>
+              (c._id || c.id) === conversationId ? { ...c, unreadCount: 0 } : c
+            )
+          );
+        }
+      }
+    );
+
+    // 3. Delivery status
+    socket.on(
+      'message_delivered',
+      ({ messageId }: { messageId: string; conversationId?: string }) => {
+        setMessages((prev) =>
+          prev.map((msg) => {
+            const msgId = msg._id || msg.id;
+            return msgId === messageId && msg.status === 'sent'
+              ? { ...msg, status: 'delivered' }
+              : msg;
+          })
+        );
+      }
+    );
 
     return () => {
       socket.disconnect();
@@ -167,7 +277,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [isAuthenticated, user]);
 
-  // Handle switching active conversation
+  // Handle switching active conversation (joins room, marks read, loads history)
   const setActiveConversation = useCallback(
     async (conversation: Conversation | null) => {
       const socket = socketRef.current;
@@ -178,6 +288,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       setActiveConversationState(conversation);
+      setTypingUsers({});
 
       if (!conversation) {
         setMessages([]);
@@ -202,15 +313,24 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         setIsLoadingMessages(true);
         const data = await chatService.getMessages(conversationId);
-        // Messages come sorted { createdAt: -1 } from backend, reverse for chronological UI
-        setMessages([...(data.messages || [])].reverse());
+        const fetchedMessages = [...(data.messages || [])].reverse();
+        setMessages(fetchedMessages);
+
+        // Mark any delivered/read messages if needed
+        if (socket && user) {
+          fetchedMessages.forEach((m) => {
+            if (m.senderId !== user.id && m.status === 'sent') {
+              socket.emit('message_delivered', { messageId: m._id });
+            }
+          });
+        }
       } catch (err) {
         console.error('Failed to fetch messages:', err);
       } finally {
         setIsLoadingMessages(false);
       }
     },
-    []
+    [user]
   );
 
   // Send message via Socket.IO with ack
@@ -243,6 +363,19 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     },
     []
   );
+
+  // Emit typing start / stop
+  const sendTypingStart = useCallback((conversationId: string) => {
+    if (socketRef.current) {
+      socketRef.current.emit('typing_start', { conversationId });
+    }
+  }, []);
+
+  const sendTypingStop = useCallback((conversationId: string) => {
+    if (socketRef.current) {
+      socketRef.current.emit('typing_stop', { conversationId });
+    }
+  }, []);
 
   // Start new conversation with a participant
   const startConversationWithUser = useCallback(
@@ -277,11 +410,14 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         activeConversation,
         messages,
         onlineUserIds,
+        typingUsers,
         isLoadingConversations,
         isLoadingMessages,
         setActiveConversation,
         startConversationWithUser,
         sendMessage,
+        sendTypingStart,
+        sendTypingStop,
         refreshConversations,
         isUserOnline,
       }}

@@ -15,10 +15,12 @@ import { ConversationListItem } from './ConversationListItem';
 
 interface ConversationsSidebarProps {
   onStartNewChat?: () => void;
+  activeFilterTab?: string;
 }
 
 export const ConversationsSidebar: React.FC<ConversationsSidebarProps> = ({
   onStartNewChat,
+  activeFilterTab = 'all',
 }) => {
   const { user } = useAuth();
   const {
@@ -57,15 +59,23 @@ export const ConversationsSidebar: React.FC<ConversationsSidebarProps> = ({
     return () => clearTimeout(searchTimer);
   }, [searchQuery]);
 
-  // Filter conversations matching query
+  // Filter conversations matching query and unread filter
   const filteredConversations = conversations.filter((c) => {
+    if (activeFilterTab === 'unread' && (!c.unreadCount || c.unreadCount <= 0)) {
+      return false;
+    }
     if (!searchQuery.trim()) return true;
-    const other = c.participants.find((p) => (p._id || p.id) !== user?.id);
+    const other = c.participants?.find((p) => {
+      const pId = typeof p === 'string' ? p : p?._id || p?.id;
+      return pId !== user?.id;
+    }) || c.participants?.[0];
+    const username = (typeof other === 'object' ? other?.username : '') || '';
+    const email = (typeof other === 'object' ? other?.email : '') || '';
     const query = searchQuery.toLowerCase();
     return (
-      other?.username.toLowerCase().includes(query) ||
-      other?.email.toLowerCase().includes(query) ||
-      c.lastMessage?.content.toLowerCase().includes(query)
+      username.toLowerCase().includes(query) ||
+      email.toLowerCase().includes(query) ||
+      c.lastMessage?.content?.toLowerCase().includes(query)
     );
   });
 
@@ -194,17 +204,23 @@ export const ConversationsSidebar: React.FC<ConversationsSidebarProps> = ({
               <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mb-3">
                 <MessageSquare className="w-6 h-6" />
               </div>
-              <h3 className="text-xs font-bold text-slate-900">No conversations yet</h3>
+              <h3 className="text-xs font-bold text-slate-900">
+                {activeFilterTab === 'unread' ? 'No unread messages' : 'No conversations yet'}
+              </h3>
               <p className="text-[11px] text-slate-500 mt-1 mb-4">
-                Search for a colleague or start a new chat below.
+                {activeFilterTab === 'unread'
+                  ? "You're all caught up with your direct messages! 🎉"
+                  : 'Search for a colleague or start a new chat below.'}
               </p>
-              <button
-                type="button"
-                onClick={onStartNewChat}
-                className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 hover:underline"
-              >
-                + Start your first chat
-              </button>
+              {activeFilterTab !== 'unread' && (
+                <button
+                  type="button"
+                  onClick={onStartNewChat}
+                  className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 hover:underline"
+                >
+                  + Start your first chat
+                </button>
+              )}
             </div>
           ) : (
             <div className="space-y-1">

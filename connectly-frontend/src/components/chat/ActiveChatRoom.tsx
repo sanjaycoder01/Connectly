@@ -27,11 +27,16 @@ export const ActiveChatRoom: React.FC = () => {
     sendMessage,
     isUserOnline,
     isLoadingMessages,
+    typingUsers,
+    sendTypingStart,
+    sendTypingStop,
   } = useChat();
 
   const [inputText, setInputText] = useState('');
   const [isSending, setIsSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isTypingRef = useRef(false);
 
   const rawParticipant =
     activeConversation?.participants?.find((p) => {
@@ -54,14 +59,79 @@ export const ActiveChatRoom: React.FC = () => {
   const participantId = otherParticipant._id || otherParticipant.id || '';
   const online = isUserOnline(participantId);
 
-  // Auto scroll to bottom on new message
+  const activeId = activeConversation?._id || activeConversation?.id || '';
+  const isOtherUserTyping = participantId ? !!typingUsers[participantId] : Object.keys(typingUsers).length > 0;
+
+  // Cleanup typing when unmounting or switching conversations
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+      if (isTypingRef.current && activeId) {
+        sendTypingStop(activeId);
+        isTypingRef.current = false;
+      }
+    };
+  }, [activeId, sendTypingStop]);
+
+  // Auto scroll to bottom on new message or typing indicator
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, isOtherUserTyping]);
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value;
+    setInputText(val);
+
+    if (!activeId) return;
+
+    if (val.trim()) {
+      if (!isTypingRef.current) {
+        isTypingRef.current = true;
+        sendTypingStart(activeId);
+      }
+
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+
+      typingTimeoutRef.current = setTimeout(() => {
+        sendTypingStop(activeId);
+        isTypingRef.current = false;
+      }, 1500);
+    } else {
+      if (isTypingRef.current) {
+        sendTypingStop(activeId);
+        isTypingRef.current = false;
+      }
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+    }
+  };
+
+  const handleInputBlur = () => {
+    if (isTypingRef.current && activeId) {
+      sendTypingStop(activeId);
+      isTypingRef.current = false;
+    }
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+  };
 
   const handleSend = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!inputText.trim() || isSending) return;
+
+    if (isTypingRef.current && activeId) {
+      sendTypingStop(activeId);
+      isTypingRef.current = false;
+    }
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
 
     const content = inputText.trim();
     setInputText('');
@@ -85,12 +155,24 @@ export const ActiveChatRoom: React.FC = () => {
 
   const renderStatusTicks = (status: Message['status']) => {
     if (status === 'read') {
-      return <CheckCheck className="w-3.5 h-3.5 text-blue-200" />;
+      return (
+        <span title="Read">
+          <CheckCheck className="w-3.5 h-3.5 text-indigo-600" />
+        </span>
+      );
     }
     if (status === 'delivered') {
-      return <CheckCheck className="w-3.5 h-3.5 text-white/70" />;
+      return (
+        <span title="Delivered">
+          <CheckCheck className="w-3.5 h-3.5 text-slate-400" />
+        </span>
+      );
     }
-    return <Check className="w-3.5 h-3.5 text-white/70" />;
+    return (
+      <span title="Sent">
+        <Check className="w-3.5 h-3.5 text-slate-400" />
+      </span>
+    );
   };
 
   return (
@@ -119,7 +201,9 @@ export const ActiveChatRoom: React.FC = () => {
               </span>
             </div>
             <p className="text-[11px] text-slate-400">
-              {online ? (
+              {isOtherUserTyping ? (
+                <span className="text-indigo-600 font-semibold animate-pulse">typing...</span>
+              ) : online ? (
                 <span className="text-emerald-600 font-medium">Active now</span>
               ) : (
                 'Offline'
@@ -236,6 +320,26 @@ export const ActiveChatRoom: React.FC = () => {
             );
           })
         )}
+
+        {/* Live Typing Indicator in Stream */}
+        {isOtherUserTyping && (
+          <div className="flex items-center gap-3 mr-auto animate-in fade-in duration-200">
+            <div className="w-8 h-8 rounded-full bg-slate-200 text-slate-700 flex items-center justify-center font-bold text-xs ring-1 ring-white flex-shrink-0">
+              {initials}
+            </div>
+            <div className="bg-white border border-slate-200/80 rounded-2xl rounded-tl-xs px-3.5 py-2.5 shadow-xs flex items-center gap-2">
+              <span className="text-xs text-slate-500 font-medium">
+                {displayName} is typing
+              </span>
+              <span className="flex gap-1 items-center">
+                <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce [animation-delay:-0.3s]" />
+                <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce [animation-delay:-0.15s]" />
+                <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" />
+              </span>
+            </div>
+          </div>
+        )}
+
         <div ref={messagesEndRef} />
       </div>
 
@@ -244,7 +348,8 @@ export const ActiveChatRoom: React.FC = () => {
         <form onSubmit={handleSend} className="border border-slate-200/80 rounded-2xl p-3 focus-within:border-indigo-400 focus-within:ring-4 focus-within:ring-indigo-500/10 transition-all bg-white shadow-2xs">
           <textarea
             value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
+            onChange={handleInputChange}
+            onBlur={handleInputBlur}
             onKeyDown={handleKeyDown}
             placeholder={`Write a message to ${displayName}... (Enter to send, Shift+Enter for new line)`}
             rows={2}

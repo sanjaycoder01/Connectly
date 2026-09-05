@@ -15,7 +15,7 @@ export const ConversationListItem: React.FC<ConversationListItemProps> = ({
   onClick,
 }) => {
   const { user } = useAuth();
-  const { isUserOnline } = useChat();
+  const { isUserOnline, typingUsers } = useChat();
 
   const rawParticipant =
     conversation.participants?.find((p) => {
@@ -37,6 +37,7 @@ export const ConversationListItem: React.FC<ConversationListItemProps> = ({
   const initials = displayName.slice(0, 2).toUpperCase();
   const participantId = otherParticipant._id || otherParticipant.id || '';
   const online = isUserOnline(participantId) || !!otherParticipant.isOnline;
+  const isTyping = participantId ? !!typingUsers[participantId] : false;
 
   const formattedTime = conversation.updatedAt
     ? new Date(conversation.updatedAt).toLocaleTimeString([], {
@@ -77,7 +78,13 @@ export const ConversationListItem: React.FC<ConversationListItemProps> = ({
         </div>
         <div className="flex items-center justify-between gap-1">
           <p className="text-xs text-slate-500 truncate">
-            {conversation.lastMessage?.content || 'No messages yet'}
+            {isTyping ? (
+              <span className="text-indigo-600 font-semibold italic animate-pulse">
+                typing...
+              </span>
+            ) : (
+              conversation.lastMessage?.content || 'No messages yet'
+            )}
           </p>
           {conversation.unreadCount > 0 && (
             <span className="min-w-4 h-4 px-1 rounded-full bg-[#3f3fe2] text-[10px] font-bold text-white flex items-center justify-center flex-shrink-0">

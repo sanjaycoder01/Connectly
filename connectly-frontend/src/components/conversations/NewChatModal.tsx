@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Search, UserPlus, Loader2 } from 'lucide-react';
 import type { User } from '../../types/auth';
 import { chatService } from '../../services/chat.service';
+import { useChat } from '../../context/ChatContext';
 
 interface NewChatModalProps {
   isOpen: boolean;
@@ -14,6 +15,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
   onClose,
   onSelectUser,
 }) => {
+  const { isUserOnline } = useChat();
   const [searchQuery, setSearchQuery] = useState('');
   const [users, setUsers] = useState<User[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -121,8 +123,15 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
               }}
               className="w-full p-2.5 rounded-2xl flex items-center gap-3 text-left hover:bg-[#edf2fa] transition-all group"
             >
-              <div className="w-9 h-9 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-xs font-bold ring-2 ring-white flex-shrink-0">
-                {u.username.slice(0, 2).toUpperCase()}
+              <div className="relative flex-shrink-0">
+                <div className="w-9 h-9 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-xs font-bold ring-2 ring-white">
+                  {u.username.slice(0, 2).toUpperCase()}
+                </div>
+                <span
+                  className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full ring-2 ring-white ${
+                    isUserOnline(u.id) ? 'bg-emerald-500' : 'bg-slate-300'
+                  }`}
+                />
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-xs font-bold text-slate-900 group-hover:text-indigo-600 transition-colors truncate">
