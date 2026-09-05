@@ -83,6 +83,7 @@ const createOrGetConversation = async (userId, participantId) => {
   });
 
   if (conversation) {
+    await conversation.populate("participants", "username email");
     return conversation;
   }
 
@@ -94,6 +95,7 @@ const createOrGetConversation = async (userId, participantId) => {
     ]),
   });
 
+  await conversation.populate("participants", "username email");
   return conversation;
 };
 

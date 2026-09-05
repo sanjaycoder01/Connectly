@@ -6,4 +6,9 @@ const getMe = asyncHandler(async (req, res) => {
   res.json({ user });
 });
 
-module.exports = { getMe };
+const getUsers = asyncHandler(async (req, res) => {
+  const users = await userService.searchUsers(req.user._id, req.query.search || "");
+  res.json({ users });
+});
+
+module.exports = { getMe, getUsers };
