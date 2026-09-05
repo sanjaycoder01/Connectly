@@ -34,7 +34,7 @@ export const ConversationsSidebar: React.FC<ConversationsSidebarProps> = ({
   const [matchedUsers, setMatchedUsers] = useState<User[]>([]);
   const [isSearching, setIsSearching] = useState(false);
 
-  // Search registered users when search query is present
+  // Search registered users when search query is present with 500ms debounce
   useEffect(() => {
     if (!searchQuery.trim()) {
       setMatchedUsers([]);
@@ -42,8 +42,8 @@ export const ConversationsSidebar: React.FC<ConversationsSidebarProps> = ({
       return;
     }
 
+    setIsSearching(true);
     const searchTimer = setTimeout(async () => {
-      setIsSearching(true);
       try {
         const res = await chatService.searchUsers(searchQuery);
         setMatchedUsers(res.users || []);
@@ -52,7 +52,7 @@ export const ConversationsSidebar: React.FC<ConversationsSidebarProps> = ({
       } finally {
         setIsSearching(false);
       }
-    }, 200);
+    }, 500);
 
     return () => clearTimeout(searchTimer);
   }, [searchQuery]);

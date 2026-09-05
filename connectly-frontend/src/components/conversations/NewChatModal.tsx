@@ -24,14 +24,15 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
       setSearchQuery('');
       setUsers([]);
       setError(null);
+      setIsLoading(false);
       return;
     }
 
-    const fetchUsers = async () => {
+    const fetchUsers = async (query: string) => {
       setIsLoading(true);
       setError(null);
       try {
-        const res = await chatService.searchUsers(searchQuery);
+        const res = await chatService.searchUsers(query);
         setUsers(res.users || []);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to search users');
@@ -40,7 +41,18 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
       }
     };
 
-    const timer = setTimeout(fetchUsers, 200);
+    // Load initial users immediately on open
+    if (!searchQuery.trim()) {
+      fetchUsers('');
+      return;
+    }
+
+    // Debounce 500ms when user types
+    setIsLoading(true);
+    const timer = setTimeout(() => {
+      fetchUsers(searchQuery);
+    }, 500);
+
     return () => clearTimeout(timer);
   }, [isOpen, searchQuery]);
 
