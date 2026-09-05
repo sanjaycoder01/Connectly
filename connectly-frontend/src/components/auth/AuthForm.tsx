@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
-import { Eye, EyeOff, ArrowRight, ShieldCheck } from 'lucide-react';
+import { Eye, EyeOff, ArrowRight, ShieldCheck, AlertCircle } from 'lucide-react';
 import type { AuthMode } from '../../types/auth';
 import { Input } from '../common/Input';
 import { Button } from '../common/Button';
-import { SocialButton } from './SocialButton';
+import { useAuth } from '../../context/AuthContext';
 
 interface AuthFormProps {
   initialMode?: AuthMode;
@@ -20,11 +20,49 @@ export const AuthForm: React.FC<AuthFormProps> = ({ initialMode = 'signin' }) =>
     rememberMe: true,
     termsAccepted: true,
   });
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const { login, signup } = useAuth();
+
+  const handleModeSwitch = (newMode: AuthMode) => {
+    setMode(newMode);
+    setErrorMessage(null);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    // UI demo state - APIs will be hooked up in the next step per prompt
-    console.log('Form submitted:', { mode, ...formData });
+    setErrorMessage(null);
+
+    if (mode === 'signup' && formData.password.length < 6) {
+      setErrorMessage('Password must be at least 6 characters');
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      if (mode === 'signup') {
+        await signup({
+          username: formData.username.trim(),
+          email: formData.email.trim(),
+          password: formData.password,
+        });
+      } else {
+        await login({
+          email: formData.email.trim(),
+          password: formData.password,
+        });
+      }
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setErrorMessage(err.message);
+      } else {
+        setErrorMessage('Authentication failed. Please try again.');
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -35,7 +73,7 @@ export const AuthForm: React.FC<AuthFormProps> = ({ initialMode = 'signin' }) =>
         <div className="inline-flex p-1 bg-[#e4ebf8] rounded-xl">
           <button
             type="button"
-            onClick={() => setMode('signin')}
+            onClick={() => handleModeSwitch('signin')}
             className={`px-4 py-1.5 text-xs font-semibold rounded-lg transition-all ${
               mode === 'signin'
                 ? 'bg-[#3b32c8] text-white shadow-sm'
@@ -46,7 +84,7 @@ export const AuthForm: React.FC<AuthFormProps> = ({ initialMode = 'signin' }) =>
           </button>
           <button
             type="button"
-            onClick={() => setMode('signup')}
+            onClick={() => handleModeSwitch('signup')}
             className={`px-4 py-1.5 text-xs font-semibold rounded-lg transition-all ${
               mode === 'signup'
                 ? 'bg-[#3b32c8] text-white shadow-sm'
@@ -80,19 +118,13 @@ export const AuthForm: React.FC<AuthFormProps> = ({ initialMode = 'signin' }) =>
           </p>
         </div>
 
-        {/* Social Login Buttons */}
-        <div className="flex gap-3 mb-6">
-          <SocialButton provider="google" onClick={() => console.log('Google login')} />
-          <SocialButton provider="github" onClick={() => console.log('GitHub login')} />
-        </div>
-
-        {/* Divider */}
-        <div className="relative flex items-center justify-center mb-6">
-          <div className="w-full border-t border-slate-200"></div>
-          <span className="bg-white px-3 text-[11px] font-semibold tracking-wider text-slate-400 uppercase relative z-10">
-            Or continue with email
-          </span>
-        </div>
+        {/* Error Alert */}
+        {errorMessage && (
+          <div className="mb-5 p-3 rounded-xl bg-red-50 border border-red-200/80 flex items-center gap-2.5 text-red-700 text-xs text-left animate-in fade-in duration-200">
+            <AlertCircle className="w-4 h-4 flex-shrink-0 text-red-500" />
+            <span className="font-medium">{errorMessage}</span>
+          </div>
+        )}
 
         {/* Auth Form */}
         <form onSubmit={handleSubmit} className="space-y-4 text-left">
@@ -179,6 +211,7 @@ export const AuthForm: React.FC<AuthFormProps> = ({ initialMode = 'signin' }) =>
           <Button
             type="submit"
             size="lg"
+            isLoading={isSubmitting}
             className="w-full mt-2 bg-[#3f3fe2] hover:bg-[#3232cf] active:bg-[#2b2bc3] text-white font-semibold py-3 rounded-xl shadow-md shadow-indigo-500/20 flex items-center justify-center gap-2"
             rightIcon={<ArrowRight className="w-4 h-4" />}
           >
@@ -192,7 +225,7 @@ export const AuthForm: React.FC<AuthFormProps> = ({ initialMode = 'signin' }) =>
                 Don&apos;t have an account?{' '}
                 <button
                   type="button"
-                  onClick={() => setMode('signup')}
+                  onClick={() => handleModeSwitch('signup')}
                   className="font-semibold text-indigo-600 hover:text-indigo-700 hover:underline transition-all"
                 >
                   Sign up for free
@@ -203,7 +236,7 @@ export const AuthForm: React.FC<AuthFormProps> = ({ initialMode = 'signin' }) =>
                 Already have an account?{' '}
                 <button
                   type="button"
-                  onClick={() => setMode('signin')}
+                  onClick={() => handleModeSwitch('signin')}
                   className="font-semibold text-indigo-600 hover:text-indigo-700 hover:underline transition-all"
                 >
                   Sign in
