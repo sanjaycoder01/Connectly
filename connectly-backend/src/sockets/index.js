@@ -50,7 +50,7 @@ const registerChatHandlers = async (io, socket) => {
   socket.on("join_conversation", async (conversationId, ack) => {
     try {
       // Rate limiting
-      const rate = checkSocketRateLimit(socket, "join_conversation");
+      const rate = await checkSocketRateLimit(socket, "join_conversation");
       if (!rate.allowed) {
         socket.emit("rate_limit_exceeded", {
           event: "join_conversation",
@@ -106,7 +106,7 @@ const registerChatHandlers = async (io, socket) => {
   // 2. Leave conversation room
   socket.on("leave_conversation", async (conversationId, ack) => {
     try {
-      const rate = checkSocketRateLimit(socket, "leave_conversation");
+      const rate = await checkSocketRateLimit(socket, "leave_conversation");
       if (!rate.allowed) {
         const err = new Error(rate.message);
         err.statusCode = rate.statusCode;
@@ -134,7 +134,7 @@ const registerChatHandlers = async (io, socket) => {
   // 3. Send message
   socket.on("send_message", async (payload, ack) => {
     try {
-      const rate = checkSocketRateLimit(socket, "send_message");
+      const rate = await checkSocketRateLimit(socket, "send_message");
       if (!rate.allowed) {
         socket.emit("rate_limit_exceeded", {
           event: "send_message",
@@ -176,7 +176,7 @@ const registerChatHandlers = async (io, socket) => {
   // 4. Typing start
   socket.on("typing_start", async (payload, ack) => {
     try {
-      const rate = checkSocketRateLimit(socket, "typing_start");
+      const rate = await checkSocketRateLimit(socket, "typing_start");
       if (!rate.allowed) {
         socket.emit("rate_limit_exceeded", {
           event: "typing_start",
@@ -213,7 +213,7 @@ const registerChatHandlers = async (io, socket) => {
   // 5. Typing stop
   socket.on("typing_stop", async (payload, ack) => {
     try {
-      const rate = checkSocketRateLimit(socket, "typing_stop");
+      const rate = await checkSocketRateLimit(socket, "typing_stop");
       if (!rate.allowed) {
         socket.emit("rate_limit_exceeded", {
           event: "typing_stop",
@@ -250,7 +250,7 @@ const registerChatHandlers = async (io, socket) => {
   // 6. Message delivered status
   socket.on("message_delivered", async (payload, ack) => {
     try {
-      const rate = checkSocketRateLimit(socket, "message_delivered");
+      const rate = await checkSocketRateLimit(socket, "message_delivered");
       if (!rate.allowed) {
         socket.emit("rate_limit_exceeded", {
           event: "message_delivered",
@@ -293,7 +293,7 @@ const registerChatHandlers = async (io, socket) => {
   // 7. Message read status
   socket.on("message_read", async (payload, ack) => {
     try {
-      const rate = checkSocketRateLimit(socket, "message_read");
+      const rate = await checkSocketRateLimit(socket, "message_read");
       if (!rate.allowed) {
         socket.emit("rate_limit_exceeded", {
           event: "message_read",

@@ -1,4 +1,7 @@
-const socketBuckets = new Map();
+const {
+  consumeRateLimit,
+  resetRateLimitKeys,
+} = require("./redisRateLimit");
 
 const DEFAULT_SOCKET_LIMITS = {
   send_message: {
@@ -38,52 +41,48 @@ const DEFAULT_SOCKET_LIMITS = {
   },
 };
 
-const checkSocketRateLimit = (socket, eventName, customLimits = {}) => {
+/**
+ * Shared Socket.IO rate limiter (Redis + memory fallback).
+ * Key: ratelimit:socket:{event}:{userId|socketId}
+ */
+const checkSocketRateLimit = async (socket, eventName, customLimits = {}) => {
   const limits = customLimits[eventName] || DEFAULT_SOCKET_LIMITS[eventName];
   if (!limits) {
     return { allowed: true };
   }
 
-  const socketId = socket.id;
-  const now = Date.now();
+  const identity =
+    socket.user?._id?.toString() ||
+    socket.userId?.toString() ||
+    socket.id ||
+    "anonymous";
 
-  if (!socketBuckets.has(socketId)) {
-    socketBuckets.set(socketId, new Map());
-  }
+  const key = `socket:${eventName}:${identity}`;
 
-  const userEvents = socketBuckets.get(socketId);
-  let record = userEvents.get(eventName);
+  try {
+    const { count, ttlMs } = await consumeRateLimit(key, limits.windowMs);
 
-  if (!record || record.resetTime <= now) {
-    record = {
-      count: 1,
-      resetTime: now + limits.windowMs,
-    };
-    userEvents.set(eventName, record);
+    if (count > limits.max) {
+      return {
+        allowed: false,
+        statusCode: 429,
+        message: limits.message,
+        retryAfterMs: Math.max(0, ttlMs),
+      };
+    }
+
+    return { allowed: true };
+  } catch (err) {
+    console.error("[SocketRateLimit] error, allowing request:", err.message);
     return { allowed: true };
   }
-
-  record.count += 1;
-
-  if (record.count > limits.max) {
-    const retryAfterMs = Math.max(0, record.resetTime - now);
-    return {
-      allowed: false,
-      statusCode: 429,
-      message: limits.message,
-      retryAfterMs,
-    };
-  }
-
-  return { allowed: true };
 };
 
-const cleanupSocket = (socketId) => {
-  socketBuckets.delete(socketId);
-};
+/** No-op for Redis (TTL cleans keys); kept for API compatibility. */
+const cleanupSocket = (_socketId) => {};
 
-const resetAll = () => {
-  socketBuckets.clear();
+const resetAll = async () => {
+  await resetRateLimitKeys("socket:");
 };
 
 module.exports = {

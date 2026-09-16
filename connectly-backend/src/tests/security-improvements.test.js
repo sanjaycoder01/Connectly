@@ -185,6 +185,9 @@ test("2. Socket.IO Input Validation rejects invalid event payloads", async () =>
 });
 
 test("3. API Rate Limiting triggers 429 Too Many Requests when limit exceeded", async () => {
+  const { resetRateLimitKeys } = require("../utils/redisRateLimit");
+  await resetRateLimitKeys("test_key");
+
   const testLimiter = createRateLimiter({
     windowMs: 5000,
     max: 3,
@@ -213,47 +216,81 @@ test("3. API Rate Limiting triggers 429 Too Many Requests when limit exceeded", 
   };
 
   // 3 allowed hits
-  testLimiter(mockReq, mockRes, next);
-  testLimiter(mockReq, mockRes, next);
-  testLimiter(mockReq, mockRes, next);
+  await testLimiter(mockReq, mockRes, next);
+  await testLimiter(mockReq, mockRes, next);
+  await testLimiter(mockReq, mockRes, next);
   assert.equal(hitCount, 3);
   assert.equal(mockRes.headers["RateLimit-Remaining"], 0);
 
   // 4th hit should be blocked with 429
-  testLimiter(mockReq, mockRes, next);
+  await testLimiter(mockReq, mockRes, next);
   assert.equal(hitCount, 3);
   assert.equal(lastStatus, 429);
   assert.ok(mockRes.headers["Retry-After"] > 0);
 });
 
-test("4. Socket.IO Event Rate Limiter throttles excessive send_message and typing events", async () => {
-  resetSocketRateLimits();
+test("3b. Redis rate limits are shared across consumers (multi-instance)", async () => {
+  const {
+    consumeRateLimit,
+    resetRateLimitKeys,
+    normalizeKey,
+  } = require("../utils/redisRateLimit");
+  const { getCommandClient } = require("../config/redis");
 
-  const mockSocket = { id: "socket_rate_test_1" };
+  assert.ok(getCommandClient(), "REDIS_URL must be set for shared rate-limit tests");
+
+  const sharedKey = `shared_test_${uniqueName("rl")}`;
+  await resetRateLimitKeys(sharedKey);
+
+  const windowMs = 5000;
+  const max = 5;
+
+  // Simulate two Node instances consuming the same Redis key
+  for (let i = 0; i < max; i++) {
+    const result = await consumeRateLimit(sharedKey, windowMs);
+    assert.equal(result.backend, "redis");
+    assert.equal(result.count, i + 1);
+  }
+
+  const blocked = await consumeRateLimit(sharedKey, windowMs);
+  assert.equal(blocked.count, max + 1);
+  assert.ok(blocked.count > max);
+
+  const redisKey = normalizeKey(sharedKey);
+  const ttl = await getCommandClient().pTTL(redisKey);
+  assert.ok(ttl > 0, "rate-limit key should have a TTL");
+
+  await resetRateLimitKeys(sharedKey);
+});
+
+test("4. Socket.IO Event Rate Limiter throttles excessive send_message and typing events", async () => {
+  await resetSocketRateLimits();
+
+  const mockSocket = { id: `socket_rate_test_${uniqueName("s")}` };
 
   // Rapidly trigger send_message up to the limit (10 allowed per 5s)
   for (let i = 0; i < 10; i++) {
-    const result = checkSocketRateLimit(mockSocket, "send_message");
+    const result = await checkSocketRateLimit(mockSocket, "send_message");
     assert.equal(result.allowed, true);
   }
 
   // 11th call exceeds limit
-  const exceededSend = checkSocketRateLimit(mockSocket, "send_message");
+  const exceededSend = await checkSocketRateLimit(mockSocket, "send_message");
   assert.equal(exceededSend.allowed, false);
   assert.equal(exceededSend.statusCode, 429);
   assert.match(exceededSend.message, /sending messages too fast/i);
 
   // Test typing_start limit (8 allowed per 5s)
   for (let i = 0; i < 8; i++) {
-    const result = checkSocketRateLimit(mockSocket, "typing_start");
+    const result = await checkSocketRateLimit(mockSocket, "typing_start");
     assert.equal(result.allowed, true);
   }
 
-  const exceededTyping = checkSocketRateLimit(mockSocket, "typing_start");
+  const exceededTyping = await checkSocketRateLimit(mockSocket, "typing_start");
   assert.equal(exceededTyping.allowed, false);
   assert.equal(exceededTyping.statusCode, 429);
 
-  resetSocketRateLimits();
+  await resetSocketRateLimits();
 });
 
 test("5. Authorization Hardening protects conversations and messages from unauthorized users", async () => {
