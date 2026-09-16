@@ -15,4 +15,6 @@ module.exports = {
   jwtSecret: process.env.JWT_SECRET,
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || "7d",
   clientUrl: process.env.CLIENT_URL || "http://localhost:5173",
+  // Optional: when set, Socket.IO uses the Redis adapter for multi-instance broadcasts
+  redisUrl: process.env.REDIS_URL || "",
 };

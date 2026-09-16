@@ -23,22 +23,28 @@ const respond = (ack, payload) => {
   }
 };
 
-const registerChatHandlers = (io, socket) => {
+const registerChatHandlers = async (io, socket) => {
   const userId = socket.user._id;
   const username = socket.user.username;
 
-  const becameOnline = presenceService.addSocket(userId, socket.id);
+  try {
+    const becameOnline = await presenceService.addSocket(userId, socket.id);
 
-  if (becameOnline) {
-    socket.broadcast.emit("user_online", {
-      userId: userId.toString(),
-      username,
+    if (becameOnline) {
+      socket.broadcast.emit("user_online", {
+        userId: userId.toString(),
+        username,
+      });
+    }
+
+    const onlineUserIds = await presenceService.getOnlineUserIds();
+    socket.emit("presence_snapshot", {
+      onlineUserIds,
     });
+  } catch (err) {
+    console.error("[Presence] failed to register connection:", err.message);
+    socket.emit("presence_snapshot", { onlineUserIds: [] });
   }
-
-  socket.emit("presence_snapshot", {
-    onlineUserIds: presenceService.getOnlineUserIds(),
-  });
 
   // 1. Join conversation room
   socket.on("join_conversation", async (conversationId, ack) => {
@@ -329,34 +335,50 @@ const registerChatHandlers = (io, socket) => {
   });
 
   // 8. Disconnect handler
-  socket.on("disconnect", () => {
+  socket.on("disconnect", async () => {
     openConversationService.closeAllForSocket(socket.id);
     cleanupSocket(socket.id);
 
-    const becameOffline = presenceService.removeSocket(userId, socket.id);
+    try {
+      const becameOffline = await presenceService.removeSocket(userId, socket.id);
 
-    if (becameOffline) {
-      socket.broadcast.emit("user_offline", {
-        userId: userId.toString(),
-        username,
-      });
+      if (becameOffline) {
+        socket.broadcast.emit("user_offline", {
+          userId: userId.toString(),
+          username,
+        });
+      }
+    } catch (err) {
+      console.error("[Presence] failed to handle disconnect:", err.message);
     }
   });
 };
 
-const initSocket = (server) => {
+const initSocket = async (server) => {
   const { Server } = require("socket.io");
+  const { createAdapter } = require("@socket.io/redis-adapter");
+  const { connectRedis } = require("../config/redis");
   const socketAuth = require("../middleware/socketAuth.middleware");
 
   const io = new Server(server, {
     cors: corsOptions,
   });
 
+  // Attach Redis adapter when REDIS_URL is configured so room/event
+  // broadcasts work across multiple Node.js instances.
+  const redisClients = await connectRedis();
+  if (redisClients) {
+    io.adapter(createAdapter(redisClients.pubClient, redisClients.subClient));
+    console.log("[Socket.IO] Redis adapter attached");
+  }
+
   io.use(socketAuth);
 
   io.on("connection", (socket) => {
     console.log("Socket connected:", socket.id, socket.user.username);
-    registerChatHandlers(io, socket);
+    void registerChatHandlers(io, socket).catch((err) => {
+      console.error("[Socket.IO] failed to register handlers:", err.message);
+    });
   });
 
   return io;

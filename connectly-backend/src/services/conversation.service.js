@@ -40,7 +40,7 @@ const getUnreadCount = (conversation, userId) => {
   return conversation.unreadCounts[key] || 0;
 };
 
-const formatConversation = (conversation, userId) => {
+const formatConversation = async (conversation, userId) => {
   const plain =
     typeof conversation.toObject === "function"
       ? conversation.toObject()
@@ -55,11 +55,8 @@ const formatConversation = (conversation, userId) => {
     unreadMap = unreadCounts;
   }
 
-  return {
-    ...plain,
-    unreadCounts: undefined,
-    unreadCount: unreadMap[userId.toString()] || 0,
-    participants: (plain.participants || []).map((participant) => {
+  const participants = await Promise.all(
+    (plain.participants || []).map(async (participant) => {
       if (!participant || typeof participant !== "object") {
         return participant;
       }
@@ -68,9 +65,16 @@ const formatConversation = (conversation, userId) => {
 
       return {
         ...participant,
-        isOnline: id ? presenceService.isOnline(id) : false,
+        isOnline: id ? await presenceService.isOnline(id) : false,
       };
-    }),
+    })
+  );
+
+  return {
+    ...plain,
+    unreadCounts: undefined,
+    unreadCount: unreadMap[userId.toString()] || 0,
+    participants,
   };
 };
 
@@ -123,8 +127,8 @@ const getUserConversations = async (userId) => {
     .populate("participants", "username email")
     .sort({ updatedAt: -1 });
 
-  return conversations.map((conversation) =>
-    formatConversation(conversation, userId)
+  return Promise.all(
+    conversations.map((conversation) => formatConversation(conversation, userId))
   );
 };
 

@@ -27,7 +27,7 @@ before(async () => {
   await connectDB();
 
   server = http.createServer(app);
-  initSocket(server);
+  await initSocket(server);
 
   await new Promise((resolve) => {
     server.listen(0, "127.0.0.1", resolve);
@@ -40,6 +40,8 @@ before(async () => {
 
 after(async () => {
   await new Promise((resolve) => server.close(resolve));
+  const { disconnectRedis } = require("../config/redis");
+  await disconnectRedis();
   await mongoose.disconnect();
 });
 

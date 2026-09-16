@@ -25,7 +25,7 @@ before(async () => {
   await connectDB();
 
   server = http.createServer(app);
-  initSocket(server);
+  await initSocket(server);
 
   await new Promise((resolve) => {
     server.listen(0, "127.0.0.1", resolve);
@@ -38,6 +38,8 @@ before(async () => {
 
 after(async () => {
   await new Promise((resolve) => server.close(resolve));
+  const { disconnectRedis } = require("../config/redis");
+  await disconnectRedis();
   await mongoose.disconnect();
 });
 
@@ -65,7 +67,24 @@ test("1. presence: user_online / user_offline with multi-socket support", async 
   const onlineEvent = await onlinePromise;
   assert.equal(onlineEvent.userId, alice.user.id);
 
+  // Second device/socket for Alice — must not emit another user_online
+  let duplicateOnline = false;
+  bobSocket.once("user_online", (payload) => {
+    if (payload.userId === alice.user.id) {
+      duplicateOnline = true;
+    }
+  });
+
   const aliceSocket2 = await connectSocket(baseUrl, alice.token);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(duplicateOnline, false);
+
+  const presenceService = require("../services/presence.service");
+  assert.equal(await presenceService.getSocketCount(alice.user.id), 2);
+  assert.equal(await presenceService.isOnline(alice.user.id), true);
+
+  const onlineIds = await presenceService.getOnlineUserIds();
+  assert.ok(onlineIds.includes(alice.user.id.toString()));
 
   const offlinePromise = waitForEvent(bobSocket, "user_offline");
   aliceSocket1.close();
@@ -78,12 +97,49 @@ test("1. presence: user_online / user_offline with multi-socket support", async 
   });
   await new Promise((resolve) => setTimeout(resolve, 200));
   assert.equal(prematureOffline, false);
+  assert.equal(await presenceService.getSocketCount(alice.user.id), 1);
 
   aliceSocket2.close();
   const offlineEvent = await offlinePromise;
   assert.equal(offlineEvent.userId, alice.user.id);
+  assert.equal(await presenceService.isOnline(alice.user.id), false);
 
   bobSocket.close();
+});
+
+test("1b. presence: Redis-backed snapshot and set membership", async () => {
+  const presenceService = require("../services/presence.service");
+  const { getCommandClient } = require("../config/redis");
+
+  const clientRedis = getCommandClient();
+  assert.ok(clientRedis, "REDIS_URL must be set for Redis presence tests");
+
+  const userId = `test-user-${uniqueName("uid")}`;
+  const socketA = `socket-a-${uniqueName("s")}`;
+  const socketB = `socket-b-${uniqueName("s")}`;
+
+  const becameOnline = await presenceService.addSocket(userId, socketA);
+  assert.equal(becameOnline, true);
+
+  const stillOnline = await presenceService.addSocket(userId, socketB);
+  assert.equal(stillOnline, false);
+
+  const members = await clientRedis.sMembers(
+    `${presenceService.USER_KEY_PREFIX}${userId}`
+  );
+  assert.equal(members.sort().join(","), [socketA, socketB].sort().join(","));
+
+  const snapshot = await presenceService.getOnlineUserIds();
+  assert.ok(snapshot.includes(userId));
+
+  assert.equal(await presenceService.removeSocket(userId, socketA), false);
+  assert.equal(await presenceService.removeSocket(userId, socketB), true);
+
+  const after = await clientRedis.sMembers(
+    `${presenceService.USER_KEY_PREFIX}${userId}`
+  );
+  assert.equal(after.length, 0);
+  assert.equal(await presenceService.isOnline(userId), false);
 });
 
 test("2. typing indicators require membership and are not persisted", async () => {

@@ -25,7 +25,7 @@ const createConversation = async (req, res, next) => {
 
     return res.status(200).json({
       message: "Conversation ready",
-      conversation: conversationService.formatConversation(
+      conversation: await conversationService.formatConversation(
         conversation,
         userId
       ),
