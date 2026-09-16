@@ -1,4 +1,5 @@
 const Conversation = require("../models/Conversation");
+const User = require("../models/User");
 const openConversationService = require("./openConversation.service");
 const presenceService = require("./presence.service");
 
@@ -74,7 +75,23 @@ const formatConversation = (conversation, userId) => {
 };
 
 const createOrGetConversation = async (userId, participantId) => {
-  const participants = [userId.toString(), participantId.toString()].sort();
+  const uId = userId.toString();
+  const pId = participantId.toString();
+
+  if (uId === pId) {
+    const error = new Error("Cannot create conversation with yourself");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const participantExists = await User.exists({ _id: pId });
+  if (!participantExists) {
+    const error = new Error("Participant not found");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const participants = [uId, pId].sort();
 
   let conversation = await Conversation.findOne({
     participants: {

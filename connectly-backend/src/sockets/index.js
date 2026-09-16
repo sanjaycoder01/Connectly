@@ -2,6 +2,20 @@ const conversationService = require("../services/conversation.service");
 const messageService = require("../services/message.service");
 const presenceService = require("../services/presence.service");
 const openConversationService = require("../services/openConversation.service");
+const { corsOptions } = require("../config/cors");
+const {
+  checkSocketRateLimit,
+  cleanupSocket,
+} = require("../utils/socketRateLimiter");
+const {
+  validateJoinConversation,
+  validateLeaveConversation,
+  validateSendMessage,
+  validateTypingEvent,
+  validateMessageDelivered,
+  validateMessageRead,
+} = require("../utils/socketValidation");
+const { handleSocketError } = require("../utils/socketError");
 
 const respond = (ack, payload) => {
   if (typeof ack === "function") {
@@ -26,21 +40,36 @@ const registerChatHandlers = (io, socket) => {
     onlineUserIds: presenceService.getOnlineUserIds(),
   });
 
+  // 1. Join conversation room
   socket.on("join_conversation", async (conversationId, ack) => {
     try {
-      if (!conversationId) {
-        const payload = {
-          ok: false,
-          message: "conversationId is required",
-          statusCode: 400,
-        };
-        socket.emit("join_conversation_error", payload);
-        return respond(ack, payload);
+      // Rate limiting
+      const rate = checkSocketRateLimit(socket, "join_conversation");
+      if (!rate.allowed) {
+        socket.emit("rate_limit_exceeded", {
+          event: "join_conversation",
+          message: rate.message,
+          retryAfterMs: rate.retryAfterMs,
+        });
+        const err = new Error(rate.message);
+        err.statusCode = rate.statusCode;
+        return handleSocketError(socket, ack, err, "join_conversation_error");
       }
 
-      await conversationService.assertParticipant(conversationId, userId);
+      // Input validation
+      const validation = validateJoinConversation(conversationId);
+      if (!validation.ok) {
+        const err = new Error(validation.message);
+        err.statusCode = 400;
+        return handleSocketError(socket, ack, err, "join_conversation_error");
+      }
 
-      const roomId = conversationId.toString();
+      const validCid = validation.conversationId;
+
+      // Authorization check (user must be an authorized participant)
+      await conversationService.assertParticipant(validCid, userId);
+
+      const roomId = validCid.toString();
       socket.join(roomId);
       openConversationService.open(roomId, userId, socket.id);
 
@@ -64,143 +93,178 @@ const registerChatHandlers = (io, socket) => {
       });
       respond(ack, success);
     } catch (error) {
-      const payload = {
-        ok: false,
-        message: error.message,
-        statusCode: error.statusCode || 500,
-      };
-      socket.emit("join_conversation_error", payload);
-      respond(ack, payload);
+      handleSocketError(socket, ack, error, "join_conversation_error");
     }
   });
 
+  // 2. Leave conversation room
   socket.on("leave_conversation", async (conversationId, ack) => {
     try {
-      if (!conversationId) {
-        return respond(ack, {
-          ok: false,
-          message: "conversationId is required",
-          statusCode: 400,
-        });
+      const rate = checkSocketRateLimit(socket, "leave_conversation");
+      if (!rate.allowed) {
+        const err = new Error(rate.message);
+        err.statusCode = rate.statusCode;
+        return handleSocketError(socket, ack, err);
       }
 
-      const roomId = conversationId.toString();
+      const validation = validateLeaveConversation(conversationId);
+      if (!validation.ok) {
+        const err = new Error(validation.message);
+        err.statusCode = 400;
+        return handleSocketError(socket, ack, err);
+      }
+
+      const validCid = validation.conversationId;
+      const roomId = validCid.toString();
       socket.leave(roomId);
       openConversationService.close(roomId, userId, socket.id);
 
       respond(ack, { ok: true, conversationId: roomId });
     } catch (error) {
-      respond(ack, {
-        ok: false,
-        message: error.message,
-        statusCode: error.statusCode || 500,
-      });
+      handleSocketError(socket, ack, error);
     }
   });
 
-  socket.on(
-    "send_message",
-    async ({ conversationId, content, clientMessageId }, ack) => {
-      try {
-        if (!conversationId || !content?.trim() || !clientMessageId?.trim()) {
-          return respond(ack, {
-            ok: false,
-            message:
-              "conversationId, content, and clientMessageId are required",
-            statusCode: 400,
-          });
-        }
-
-        const { message, created } = await messageService.createMessage(
-          conversationId,
-          userId,
-          content.trim(),
-          clientMessageId.trim()
-        );
-
-        if (created) {
-          io.to(conversationId.toString()).emit("new_message", message);
-        }
-
-        respond(ack, { ok: true, message, created });
-      } catch (error) {
-        respond(ack, {
-          ok: false,
-          message: error.message,
-          statusCode: error.statusCode || 500,
-        });
-      }
-    }
-  );
-
-  socket.on("typing_start", async ({ conversationId }, ack) => {
+  // 3. Send message
+  socket.on("send_message", async (payload, ack) => {
     try {
-      if (!conversationId) {
-        return respond(ack, {
-          ok: false,
-          message: "conversationId is required",
-          statusCode: 400,
+      const rate = checkSocketRateLimit(socket, "send_message");
+      if (!rate.allowed) {
+        socket.emit("rate_limit_exceeded", {
+          event: "send_message",
+          message: rate.message,
+          retryAfterMs: rate.retryAfterMs,
         });
+        const err = new Error(rate.message);
+        err.statusCode = rate.statusCode;
+        return handleSocketError(socket, ack, err);
       }
 
-      await conversationService.assertParticipant(conversationId, userId);
+      const validation = validateSendMessage(payload);
+      if (!validation.ok) {
+        const err = new Error(validation.message);
+        err.statusCode = 400;
+        return handleSocketError(socket, ack, err);
+      }
 
-      socket.to(conversationId.toString()).emit("typing_start", {
-        conversationId: conversationId.toString(),
+      const { conversationId, content, clientMessageId } = validation.data;
+
+      // createMessage asserts participant membership authorization
+      const { message, created } = await messageService.createMessage(
+        conversationId,
+        userId,
+        content,
+        clientMessageId
+      );
+
+      if (created) {
+        io.to(conversationId.toString()).emit("new_message", message);
+      }
+
+      respond(ack, { ok: true, message, created });
+    } catch (error) {
+      handleSocketError(socket, ack, error);
+    }
+  });
+
+  // 4. Typing start
+  socket.on("typing_start", async (payload, ack) => {
+    try {
+      const rate = checkSocketRateLimit(socket, "typing_start");
+      if (!rate.allowed) {
+        socket.emit("rate_limit_exceeded", {
+          event: "typing_start",
+          message: rate.message,
+          retryAfterMs: rate.retryAfterMs,
+        });
+        const err = new Error(rate.message);
+        err.statusCode = rate.statusCode;
+        return handleSocketError(socket, ack, err);
+      }
+
+      const validation = validateTypingEvent(payload);
+      if (!validation.ok) {
+        const err = new Error(validation.message);
+        err.statusCode = 400;
+        return handleSocketError(socket, ack, err);
+      }
+
+      const validCid = validation.conversationId;
+      await conversationService.assertParticipant(validCid, userId);
+
+      socket.to(validCid.toString()).emit("typing_start", {
+        conversationId: validCid.toString(),
         userId: userId.toString(),
         username,
       });
 
       respond(ack, { ok: true });
     } catch (error) {
-      respond(ack, {
-        ok: false,
-        message: error.message,
-        statusCode: error.statusCode || 500,
-      });
+      handleSocketError(socket, ack, error);
     }
   });
 
-  socket.on("typing_stop", async ({ conversationId }, ack) => {
+  // 5. Typing stop
+  socket.on("typing_stop", async (payload, ack) => {
     try {
-      if (!conversationId) {
-        return respond(ack, {
-          ok: false,
-          message: "conversationId is required",
-          statusCode: 400,
+      const rate = checkSocketRateLimit(socket, "typing_stop");
+      if (!rate.allowed) {
+        socket.emit("rate_limit_exceeded", {
+          event: "typing_stop",
+          message: rate.message,
+          retryAfterMs: rate.retryAfterMs,
         });
+        const err = new Error(rate.message);
+        err.statusCode = rate.statusCode;
+        return handleSocketError(socket, ack, err);
       }
 
-      await conversationService.assertParticipant(conversationId, userId);
+      const validation = validateTypingEvent(payload);
+      if (!validation.ok) {
+        const err = new Error(validation.message);
+        err.statusCode = 400;
+        return handleSocketError(socket, ack, err);
+      }
 
-      socket.to(conversationId.toString()).emit("typing_stop", {
-        conversationId: conversationId.toString(),
+      const validCid = validation.conversationId;
+      await conversationService.assertParticipant(validCid, userId);
+
+      socket.to(validCid.toString()).emit("typing_stop", {
+        conversationId: validCid.toString(),
         userId: userId.toString(),
         username,
       });
 
       respond(ack, { ok: true });
     } catch (error) {
-      respond(ack, {
-        ok: false,
-        message: error.message,
-        statusCode: error.statusCode || 500,
-      });
+      handleSocketError(socket, ack, error);
     }
   });
 
-  socket.on("message_delivered", async ({ messageId }, ack) => {
+  // 6. Message delivered status
+  socket.on("message_delivered", async (payload, ack) => {
     try {
-      if (!messageId) {
-        return respond(ack, {
-          ok: false,
-          message: "messageId is required",
-          statusCode: 400,
+      const rate = checkSocketRateLimit(socket, "message_delivered");
+      if (!rate.allowed) {
+        socket.emit("rate_limit_exceeded", {
+          event: "message_delivered",
+          message: rate.message,
+          retryAfterMs: rate.retryAfterMs,
         });
+        const err = new Error(rate.message);
+        err.statusCode = rate.statusCode;
+        return handleSocketError(socket, ack, err);
+      }
+
+      const validation = validateMessageDelivered(payload);
+      if (!validation.ok) {
+        const err = new Error(validation.message);
+        err.statusCode = 400;
+        return handleSocketError(socket, ack, err);
       }
 
       const { message, updated } = await messageService.markMessageDelivered(
-        messageId,
+        validation.messageId,
         userId
       );
 
@@ -216,25 +280,33 @@ const registerChatHandlers = (io, socket) => {
 
       respond(ack, { ok: true, message, updated });
     } catch (error) {
-      respond(ack, {
-        ok: false,
-        message: error.message,
-        statusCode: error.statusCode || 500,
-      });
+      handleSocketError(socket, ack, error);
     }
   });
 
-  socket.on("message_read", async ({ conversationId }, ack) => {
+  // 7. Message read status
+  socket.on("message_read", async (payload, ack) => {
     try {
-      if (!conversationId) {
-        return respond(ack, {
-          ok: false,
-          message: "conversationId is required",
-          statusCode: 400,
+      const rate = checkSocketRateLimit(socket, "message_read");
+      if (!rate.allowed) {
+        socket.emit("rate_limit_exceeded", {
+          event: "message_read",
+          message: rate.message,
+          retryAfterMs: rate.retryAfterMs,
         });
+        const err = new Error(rate.message);
+        err.statusCode = rate.statusCode;
+        return handleSocketError(socket, ack, err);
       }
 
-      const roomId = conversationId.toString();
+      const validation = validateMessageRead(payload);
+      if (!validation.ok) {
+        const err = new Error(validation.message);
+        err.statusCode = 400;
+        return handleSocketError(socket, ack, err);
+      }
+
+      const roomId = validation.conversationId.toString();
       const result = await messageService.markConversationRead(roomId, userId);
 
       if (result.updated) {
@@ -252,16 +324,14 @@ const registerChatHandlers = (io, socket) => {
         updated: result.updated,
       });
     } catch (error) {
-      respond(ack, {
-        ok: false,
-        message: error.message,
-        statusCode: error.statusCode || 500,
-      });
+      handleSocketError(socket, ack, error);
     }
   });
 
+  // 8. Disconnect handler
   socket.on("disconnect", () => {
     openConversationService.closeAllForSocket(socket.id);
+    cleanupSocket(socket.id);
 
     const becameOffline = presenceService.removeSocket(userId, socket.id);
 
@@ -279,10 +349,7 @@ const initSocket = (server) => {
   const socketAuth = require("../middleware/socketAuth.middleware");
 
   const io = new Server(server, {
-    cors: {
-      origin: "*",
-      credentials: true,
-    },
+    cors: corsOptions,
   });
 
   io.use(socketAuth);

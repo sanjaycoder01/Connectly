@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "test": "node --test src/tests/chat-features.test.js"
+    "test": "node --test src/tests/chat-features.test.js",
+    "test:security": "node --test src/tests/security-improvements.test.js"
   },
   "keywords": [],
   "author": "",

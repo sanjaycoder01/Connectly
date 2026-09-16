@@ -1,4 +1,5 @@
 const User = require("../models/User");
+const { escapeRegex } = require("../middleware/validation.middleware");
 
 const getUserById = async (userId) => {
   const user = await User.findById(userId);
@@ -16,7 +17,8 @@ const searchUsers = async (currentUserId, query = "") => {
   const filter = { _id: { $ne: currentUserId } };
 
   if (query && query.trim()) {
-    const regex = new RegExp(query.trim(), "i");
+    const escaped = escapeRegex(query.trim());
+    const regex = new RegExp(escaped, "i");
     filter.$or = [{ username: regex }, { email: regex }];
   }
 
