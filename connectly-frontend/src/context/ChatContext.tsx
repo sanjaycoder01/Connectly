@@ -333,33 +333,71 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [user]
   );
 
-  // Send message via Socket.IO with ack
+  // Send message via Socket.IO with ack.
+  // clientMessageId is created once per logical send and reused on retries
+  // so the backend can dedupe if the first attempt was saved but ACK was lost.
   const sendMessage = useCallback(
     async (content: string) => {
       const active = activeConversationRef.current;
-      const socket = socketRef.current;
-      if (!active || !socket || !content.trim()) return;
+      if (!active || !content.trim()) return;
 
       const conversationId = active._id || active.id;
+      const trimmed = content.trim();
       const clientMessageId = crypto.randomUUID();
+      const maxAttempts = 3;
+      const ackTimeoutMs = 8000;
 
-      return new Promise<void>((resolve, reject) => {
-        socket.emit(
-          'send_message',
-          {
-            conversationId,
-            content: content.trim(),
-            clientMessageId,
-          },
-          (res: { ok: boolean; message?: Message; messageId?: string; error?: string }) => {
-            if (res && res.ok) {
-              resolve();
-            } else {
-              reject(new Error(res?.error || 'Failed to send message'));
-            }
+      const attemptSend = (): Promise<void> =>
+        new Promise((resolve, reject) => {
+          const socket = socketRef.current;
+          if (!socket?.connected) {
+            reject(new Error('Socket not connected'));
+            return;
           }
-        );
-      });
+
+          const timer = setTimeout(() => {
+            reject(new Error('Send acknowledgement timed out'));
+          }, ackTimeoutMs);
+
+          socket.emit(
+            'send_message',
+            {
+              conversationId,
+              content: trimmed,
+              clientMessageId,
+            },
+            (res: {
+              ok: boolean;
+              message?: Message;
+              messageId?: string;
+              error?: string;
+              created?: boolean;
+            }) => {
+              clearTimeout(timer);
+              if (res && res.ok) {
+                resolve();
+              } else {
+                reject(new Error(res?.error || 'Failed to send message'));
+              }
+            }
+          );
+        });
+
+      let lastError: Error | null = null;
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          await attemptSend();
+          return;
+        } catch (err) {
+          lastError = err instanceof Error ? err : new Error(String(err));
+          if (attempt < maxAttempts) {
+            await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
+          }
+        }
+      }
+
+      throw lastError || new Error('Failed to send message');
     },
     []
   );
