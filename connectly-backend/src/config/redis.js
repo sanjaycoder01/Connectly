@@ -79,11 +79,14 @@ const disconnectRedis = async () => {
   await Promise.all(
     clients.map(async (client) => {
       try {
+        client.removeAllListeners("error");
+        client.on("error", () => {
+          // Ignore post-shutdown noise from Socket.IO adapter cleanup
+        });
         if (client.isOpen) {
           await client.quit();
         }
       } catch (err) {
-        console.error("[Redis] error during quit:", err.message);
         try {
           await client.disconnect();
         } catch {

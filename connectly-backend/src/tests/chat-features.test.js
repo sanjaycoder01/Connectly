@@ -15,9 +15,11 @@ const {
   waitForEvent,
   uniqueName,
   randomUUID,
+  connectSocketWithPresence,
 } = require("./helpers");
 
 let server;
+let io;
 let baseUrl;
 let client;
 
@@ -25,7 +27,7 @@ before(async () => {
   await connectDB();
 
   server = http.createServer(app);
-  await initSocket(server);
+  io = await initSocket(server);
 
   await new Promise((resolve) => {
     server.listen(0, "127.0.0.1", resolve);
@@ -37,7 +39,14 @@ before(async () => {
 });
 
 after(async () => {
-  await new Promise((resolve) => server.close(resolve));
+  if (io) {
+    await new Promise((resolve) => io.close(resolve));
+    // Allow Socket.IO Redis adapter in-flight ops to settle before quitting clients
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (server) {
+    await new Promise((resolve) => server.close(resolve));
+  }
   const { disconnectRedis } = require("../config/redis");
   await disconnectRedis();
   await mongoose.disconnect();
@@ -426,6 +435,114 @@ test("5. unread count increments when chat closed and resets on read", async () 
     (c) => c._id === conversationId
   );
   assert.equal(bobConversationOpen.unreadCount, 0);
+
+  aliceSocket.close();
+  bobSocket.close();
+});
+
+test("6. reconnect recovery: rejoin room, resync missed Mongo messages, live again", async () => {
+  const aliceName = uniqueName("alice_reconn");
+  const bobName = uniqueName("bob_reconn");
+
+  const alice = await signupOrLogin(
+    client,
+    aliceName,
+    `${aliceName}@example.com`,
+    "secret123"
+  );
+  const bob = await signupOrLogin(
+    client,
+    bobName,
+    `${bobName}@example.com`,
+    "secret123"
+  );
+
+  const conversation = await client.request(
+    "POST",
+    "/api/conversations",
+    { participantId: bob.user.id },
+    `token=${alice.token}`
+  );
+  const conversationId = conversation.body.conversation._id;
+
+  // Alice joins, then disconnects (simulates network drop)
+  let aliceConn = await connectSocketWithPresence(baseUrl, alice.token);
+  let aliceSocket = aliceConn.socket;
+  assert.ok(Array.isArray(aliceConn.snapshot.onlineUserIds));
+
+  await emitWithAck(aliceSocket, "join_conversation", conversationId);
+  aliceSocket.close();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  // Bob sends while Alice is offline — message lands in Mongo only for Alice
+  const bobSocket = await connectSocket(baseUrl, bob.token);
+  await emitWithAck(bobSocket, "join_conversation", conversationId);
+
+  const missedContent = "Missed while Alice offline";
+  const sendAck = await emitWithAck(bobSocket, "send_message", {
+    conversationId,
+    content: missedContent,
+    clientMessageId: randomUUID(),
+  });
+  assert.equal(sendAck.ok, true);
+  assert.equal(sendAck.created, true);
+
+  // Alice reconnects → presence snapshot + rejoin + HTTP resync (Mongo source of truth)
+  aliceConn = await connectSocketWithPresence(baseUrl, alice.token);
+  aliceSocket = aliceConn.socket;
+  assert.ok(Array.isArray(aliceConn.snapshot.onlineUserIds));
+  assert.ok(
+    aliceConn.snapshot.onlineUserIds.includes(bob.user.id.toString()) ||
+      aliceConn.snapshot.onlineUserIds.includes(alice.user.id.toString())
+  );
+
+  await emitWithAck(aliceSocket, "join_conversation", conversationId);
+
+  const history = await client.request(
+    "GET",
+    `/api/messages/${conversationId}?limit=50`,
+    null,
+    `token=${alice.token}`
+  );
+  assert.equal(history.status, 200);
+  const missed = (history.body.messages || []).find(
+    (m) => m.content === missedContent
+  );
+  assert.ok(missed, "missed message should be recoverable from Mongo after reconnect");
+
+  // Dedupes: fetching again still yields a single message with that id
+  const historyAgain = await client.request(
+    "GET",
+    `/api/messages/${conversationId}?limit=50`,
+    null,
+    `token=${alice.token}`
+  );
+  const matches = (historyAgain.body.messages || []).filter(
+    (m) => m._id === missed._id
+  );
+  assert.equal(matches.length, 1);
+
+  // After rejoin, live room delivery works again
+  const livePromise = waitForEvent(aliceSocket, "new_message");
+  await emitWithAck(bobSocket, "send_message", {
+    conversationId,
+    content: "Live after reconnect",
+    clientMessageId: randomUUID(),
+  });
+  const liveMsg = await livePromise;
+  assert.equal(liveMsg.content, "Live after reconnect");
+
+  // Conversations/unread API still works post-reconnect
+  const aliceConversations = await client.request(
+    "GET",
+    "/api/conversations",
+    null,
+    `token=${alice.token}`
+  );
+  assert.equal(aliceConversations.status, 200);
+  assert.ok(
+    aliceConversations.body.conversations.some((c) => c._id === conversationId)
+  );
 
   aliceSocket.close();
   bobSocket.close();

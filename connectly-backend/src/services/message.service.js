@@ -144,17 +144,23 @@ const markConversationRead = async (conversationId, userId) => {
   const messageIds = pending.map((doc) => doc._id);
   const now = new Date();
 
+  // Set deliveredAt for any still missing it, then mark all as read.
+  await Message.updateMany(
+    {
+      _id: { $in: messageIds },
+      $or: [{ deliveredAt: null }, { deliveredAt: { $exists: false } }],
+    },
+    { $set: { deliveredAt: now } }
+  );
+
   await Message.updateMany(
     { _id: { $in: messageIds } },
-    [
-      {
-        $set: {
-          status: MESSAGE_STATUS.READ,
-          readAt: now,
-          deliveredAt: { $ifNull: ["$deliveredAt", now] },
-        },
+    {
+      $set: {
+        status: MESSAGE_STATUS.READ,
+        readAt: now,
       },
-    ]
+    }
   );
 
   await resetUnread(conversationId, userId);

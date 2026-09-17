@@ -17,6 +17,7 @@ const createHttpClient = (baseUrl) => {
           method,
           headers: {
             "Content-Type": "application/json",
+            "x-skip-rate-limit": "1",
             ...(cookieHeader ? { Cookie: cookieHeader } : {}),
             ...(payload
               ? { "Content-Length": Buffer.byteLength(payload) }
@@ -113,6 +114,48 @@ const connectSocket = (baseUrl, token) =>
     });
   });
 
+/**
+ * Connect and wait for the initial presence_snapshot (avoids missing the event).
+ */
+const connectSocketWithPresence = (baseUrl, token) =>
+  new Promise((resolve, reject) => {
+    const socket = io(baseUrl, {
+      extraHeaders: { Cookie: `token=${token}` },
+      forceNew: true,
+    });
+
+    let connected = false;
+    let snapshot = null;
+
+    const timeout = setTimeout(() => {
+      socket.close();
+      reject(new Error("Socket connection/presence timed out"));
+    }, 5000);
+
+    const maybeDone = () => {
+      if (connected && snapshot) {
+        clearTimeout(timeout);
+        resolve({ socket, snapshot });
+      }
+    };
+
+    socket.on("presence_snapshot", (payload) => {
+      snapshot = payload;
+      maybeDone();
+    });
+
+    socket.on("connect", () => {
+      connected = true;
+      maybeDone();
+    });
+
+    socket.on("connect_error", (error) => {
+      clearTimeout(timeout);
+      socket.close();
+      reject(error);
+    });
+  });
+
 const emitWithAck = (socket, event, payload, timeoutMs = 5000) =>
   new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -146,6 +189,7 @@ module.exports = {
   createHttpClient,
   signupOrLogin,
   connectSocket,
+  connectSocketWithPresence,
   emitWithAck,
   waitForEvent,
   uniqueName,

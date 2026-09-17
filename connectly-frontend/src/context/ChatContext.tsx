@@ -3,6 +3,7 @@ import { io, Socket } from 'socket.io-client';
 import type { Conversation, Message } from '../types/conversation';
 import { chatService } from '../services/chat.service';
 import { useAuth } from './AuthContext';
+import { mergeMessages } from '../utils/messageMerge';
 
 interface ChatContextType {
   conversations: Conversation[];
@@ -36,10 +37,17 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const socketRef = useRef<Socket | null>(null);
   const activeConversationRef = useRef<Conversation | null>(null);
+  const refreshConversationsRef = useRef<() => Promise<void>>(async () => {});
+  const userIdRef = useRef(user?.id);
+  const isRecoveringRef = useRef(false);
 
   useEffect(() => {
     activeConversationRef.current = activeConversation;
   }, [activeConversation]);
+
+  useEffect(() => {
+    userIdRef.current = user?.id;
+  }, [user?.id]);
 
   // Load user conversations from backend (Feature 5: Unread count & conversation list)
   const refreshConversations = useCallback(async () => {
@@ -54,6 +62,10 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setIsLoadingConversations(false);
     }
   }, [isAuthenticated]);
+
+  useEffect(() => {
+    refreshConversationsRef.current = refreshConversations;
+  }, [refreshConversations]);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -90,12 +102,83 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const socket = io({
       withCredentials: true,
       transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 500,
+      reconnectionDelayMax: 5000,
     });
 
     socketRef.current = socket;
+    let hasConnectedOnce = false;
+
+    const joinActiveConversation = (targetSocket: Socket) =>
+      new Promise<string | null>((resolve) => {
+        const active = activeConversationRef.current;
+        const conversationId = active?._id || active?.id || null;
+        if (!conversationId) {
+          resolve(null);
+          return;
+        }
+
+        const timeout = setTimeout(() => resolve(conversationId), 3000);
+        targetSocket.emit('join_conversation', conversationId, () => {
+          clearTimeout(timeout);
+          resolve(conversationId);
+        });
+      });
+
+    const recoverAfterReconnect = async (targetSocket: Socket, isReconnect: boolean) => {
+      if (!isReconnect) {
+        return;
+      }
+      if (isRecoveringRef.current) {
+        return;
+      }
+
+      isRecoveringRef.current = true;
+      try {
+        // 1. Rejoin active conversation room (rooms do not survive reconnect)
+        const conversationId = await joinActiveConversation(targetSocket);
+
+        // 2. Resync messages from MongoDB and merge without duplicates
+        if (conversationId) {
+          try {
+            const data = await chatService.getMessages(conversationId, 50);
+            const fetched = [...(data.messages || [])].reverse();
+
+            setMessages((prev) => mergeMessages(prev, fetched));
+
+            const currentUserId = userIdRef.current;
+            fetched.forEach((m) => {
+              if (currentUserId && m.senderId !== currentUserId && m.status === 'sent') {
+                targetSocket.emit('message_delivered', { messageId: m._id });
+              }
+            });
+            targetSocket.emit('message_read', { conversationId });
+          } catch (err) {
+            console.error('Failed to resync messages after reconnect:', err);
+          }
+        }
+
+        // 3. Refresh conversation list + unread counts
+        await refreshConversationsRef.current();
+
+        // 4. Presence snapshot is emitted by the server on each (re)connection
+      } finally {
+        isRecoveringRef.current = false;
+      }
+    };
 
     socket.on('connect', () => {
-      console.log('Socket connected:', socket.id);
+      const isReconnect = hasConnectedOnce;
+      hasConnectedOnce = true;
+
+      console.log(
+        isReconnect ? 'Socket reconnected:' : 'Socket connected:',
+        socket.id
+      );
+
+      void recoverAfterReconnect(socket, isReconnect);
     });
 
     // 1. Online/Offline presence
@@ -187,7 +270,18 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // If active conversation, append message and mark as read & delivered
       if (active && (active._id === conversationId || active.id === conversationId)) {
         setMessages((prev) => {
-          if (prev.some((m) => m._id === msg._id)) return prev;
+          if (
+            prev.some(
+              (m) =>
+                (m._id && m._id === msg._id) ||
+                (m.id && m.id === msg._id) ||
+                (msg.clientMessageId &&
+                  m.clientMessageId &&
+                  m.clientMessageId === msg.clientMessageId)
+            )
+          ) {
+            return prev;
+          }
           return [...prev, msg];
         });
 

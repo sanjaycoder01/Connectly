@@ -16,8 +16,11 @@ const createRateLimiter = ({
 } = {}) => {
   const middleware = async (req, res, next) => {
     try {
-      // In tests, allow bypass if header is explicitly provided
-      if (nodeEnv === "test" && req.headers["x-skip-rate-limit"]) {
+      // Allow test suite to bypass limits outside production
+      if (
+        req.headers["x-skip-rate-limit"] &&
+        nodeEnv !== "production"
+      ) {
         return next();
       }
 
